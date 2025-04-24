@@ -10,7 +10,7 @@ class ImageProcessor:
         self.image_path = image_path
         self.gamma = gamma
         self.name = os.path.splitext(os.path.basename(image_path))[0]
-        self.output_dir = os.path.join("C:/VisualCode/OI_EA/results", self.name)
+        self.output_dir = os.path.join("C:/Users/Ilya/Documents/GitHub/OI_LR2", self.name)
         os.makedirs(self.output_dir, exist_ok=True)
 
         self.original = self._load_image()
@@ -64,51 +64,70 @@ class ImageProcessor:
                 f.write(f"{i}\t{count}\n")
 
     def analyze_image(self):
-        # Анализ гистограммы оригинального изображения
+        """Анализ изображения с тремя новыми метриками"""
         hist = self.generate_histogram(self.gray)
         total_pixels = self.gray.size
-        mean_brightness = np.mean(self.gray)
-        std_dev = np.std(self.gray)  # Мера контраста
-
-        # Определяем перекос гистограммы
-        skew = np.sum((np.arange(256) - mean_brightness)**3 * hist) / (total_pixels * std_dev**3)
         
-        # Оценка типа изображения
-        if mean_brightness < 60:
-            brightness_comment = "Тёмное (недоэкспонированное)"
-        elif mean_brightness > 200:
-            brightness_comment = "Светлое (переэкспонированное)"
-        else:
-            brightness_comment = "Нормальная экспозиция"
-
-        if std_dev < 40:
-            contrast_comment = "Низкий контраст"
-        elif std_dev > 80:
-            contrast_comment = "Высокий контраст"
-        else:
-            contrast_comment = "Умеренный контраст"
-
-        if skew > 1:
-            skew_comment = "Перекос в тени"
-        elif skew < -1:
-            skew_comment = "Перекос в светлые области"
-        else:
-            skew_comment = "Сбалансированная гистограмма"
-
-        # Сохраняем гистограмму в файл
-        self.save_histogram_data(hist, "histogram_original.txt")
-
+        # 1. Метрика: Соотношение информации по тоновым зонам
+        zone_size = 256 // 3
+        zone1 = np.sum(hist[:zone_size])  # Тёмные тона (0-85)
+        zone2 = np.sum(hist[zone_size:2*zone_size])  # Средние тона (85-170)
+        zone3 = np.sum(hist[2*zone_size:])  # Светлые тона (170-255)
+        
+        # Нормируем значения и вычисляем соотношения
+        zone_ratios = [
+            zone1 / total_pixels,
+            zone2 / total_pixels,
+            zone3 / total_pixels
+        ]
+        
+        # Оценка баланса (чем ближе к 1, тем равномернее распределение)
+        balance_metric = min(zone_ratios) / max(zone_ratios)
+        
+        # 2. Метод оценки контраста (дельта L = Lmax - Lmin)
+        # Игнорируем крайние значения с малым количеством пикселей
+        threshold = total_pixels * 0.001  # 0.1% от общего числа пикселей
+        l_min = np.where(hist > threshold)[0][0] if np.any(hist > threshold) else 0
+        l_max = np.where(hist > threshold)[0][-1] if np.any(hist > threshold) else 255
+        delta_L = l_max - l_min
+        
+        # 3. Дисперсия (мера разброса яркостей)
+        mean_brightness = np.mean(self.gray)
+        variance = np.var(self.gray)  # Собственно дисперсия
+        std_dev = np.sqrt(variance)   # Стандартное отклонение
+        
+        # Дополнительная метрика: асимметрия распределения
+        skewness = np.sum((np.arange(256) - mean_brightness)**3 * hist) / (total_pixels * std_dev**3)
+        
         # Формируем отчёт
         report = f"""
         === Анализ изображения {self.name} ===
-        - Средняя яркость: {mean_brightness:.1f} ({brightness_comment})
-        - Стандартное отклонение (контраст): {std_dev:.1f} ({contrast_comment})
-        - Перекос гистограммы: {skew:.2f} ({skew_comment})
-        - Рекомендуемые методы:
-            * Текущая гамма-коррекция (γ={self.gamma}): {'затемнение' if self.gamma > 1 else 'осветление'}
-            * {'Гистограммная эквализация (улучшит тени)' if skew > 0.5 else 'CLAHE (если есть локальные перепады)'}
-            * {'Логарифмическое преобразование (если очень тёмное)' if mean_brightness < 50 else ''}
+        [1] Соотношение тоновых зон:
+            • Тёмные (0-85): {zone_ratios[0]:.2%}
+            • Средние (85-170): {zone_ratios[1]:.2%}
+            • Светлые (170-255): {zone_ratios[2]:.2%}
+            • Баланс: {balance_metric:.2f} (1 = идеально)
+        
+        [2] Оценка контраста:
+            • Lmin: {l_min} (первый значимый уровень)
+            • Lmax: {l_max} (последний значимый уровень)
+            • ΔL (диапазон): {delta_L} (чем больше, тем лучше)
+        
+        [3] Дисперсия и распределение:
+            • Дисперсия: {variance:.1f}
+            • Стандартное отклонение: {std_dev:.1f}
+            • Асимметрия: {skewness:.2f} (>0 - перекос в тени, <0 - в светах, 0 - идеал)
         """
+        
+        # Сохраняем данные в файл
+        metrics = {
+            "zone_ratios": zone_ratios,
+            "balance_metric": balance_metric,
+            "delta_L": delta_L,
+            "variance": variance,
+            "skewness": skewness
+        }
+        
         print(report)
         return report
 
@@ -162,10 +181,10 @@ class ImageProcessor:
 
 # === Обработка всех изображений по очереди ===
 image_info = [
-    ("OI_EA/First.jpg", 1.5),
-    ("OI_EA/Second.jpg", 0.8),
-    ("OI_EA/Third.jpg", 0.8),
-    ("OI_EA/Fourth.jpg", 0.8),
+    ("OI_LR2/First.jpg", 1.5),
+    ("OI_LR2/Second.jpg", 0.8),
+    ("OI_LR2/Third.jpg", 0.8),
+    ("OI_LR2/Fourth.jpg", 0.8),
 ]
 
 for img_path, gamma in image_info:
@@ -181,13 +200,11 @@ for img_path, gamma in image_info:
         
     elif "Second.jpg" in img_path:
         # Оптимизированная обработка для второго изображения
-        # 1. Более мягкое уменьшение яркости (0.9 вместо 0.85)
-        adjusted = np.clip(processor.gray.astype('float32') * 0.9, 0, 255).astype('uint8')
 
-        # 2. Менее агрессивное CLAHE (clip_limit=3.0 вместо 4.0)
-        clahe_img = processor.apply_clahe(adjusted, clip_limit=3.0, tile_grid_size=(16,16))
+        # 1. Менее агрессивное CLAHE (clip_limit=3.0 вместо 4.0)
+        clahe_img = processor.apply_clahe(processor.gray, clip_limit=3.0, tile_grid_size=(16,16))
 
-        # 3. Лёгкая гамма-коррекция (0.8 вместо 0.6)
+        # 2. Лёгкая гамма-коррекция (0.8 вместо 0.6)
         corrected = processor.gamma_correction(clahe_img, 0.8)
         processor.save_image(corrected, "Final.png")
         
