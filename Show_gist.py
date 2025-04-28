@@ -40,7 +40,7 @@ def load_and_plot_image_with_histogram(image_path):
 # Пример использования
 if __name__ == "__main__":
     # Путь к обработанному изображению (измените на свой)
-    image_path = "OI_LR2\Second\Final.png"
+    image_path = "OI_LR2\First.jpg"
     
     # Запуск визуализации
     load_and_plot_image_with_histogram(image_path)
