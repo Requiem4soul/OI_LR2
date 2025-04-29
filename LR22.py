@@ -48,14 +48,16 @@ class ImageProcessor:
         cdf = hist.cumsum()
         cdf_normalized = (cdf - cdf.min()) * 255 / (cdf.max() - cdf.min())
         return cdf_normalized[img].astype(np.uint8)
-
+    
     def contrast_stretching(self, img):
-        l_min = np.min(img)
-        l_max = np.max(img)
-        if l_max - l_min == 0:
+        procent = 5
+        low = np.percentile(img, procent)
+        high = np.percentile(img, 100 - procent)
+        if high == low:
             return img.copy()
-        stretched = (img - l_min) / (l_max - l_min) * 255
-        return stretched.astype(np.uint8)
+        stretched = np.clip(img, low, high)
+        stretched = ((stretched - low) / (high - low) * 255).astype(np.uint8)
+        return stretched
 
     def gamma_correction(self, img, gamma):
         norm_img = img / 255.0
@@ -71,81 +73,92 @@ class ImageProcessor:
         cv2.imwrite(path, img)
         
     def analyze_image(self, img):
-        """Анализ изображения с тремя метриками"""
         hist = self.generate_histogram(img)
         total_pixels = img.size
-        
-        # 1. Метрика: Соотношение информации по тоновым зонам
+
         zone_size = 256 // 3
-        zone1 = np.sum(hist[:zone_size])  # Тёмные тона (0-85)
-        zone2 = np.sum(hist[zone_size:2*zone_size])  # Средние тона (85-170)
-        zone3 = np.sum(hist[2*zone_size:])  # Светлые тона (170-255)
-        
-        # Нормируем значения и вычисляем соотношения
+        zone1 = np.sum(hist[:zone_size])
+        zone2 = np.sum(hist[zone_size:2*zone_size])
+        zone3 = np.sum(hist[2*zone_size:])
+
         zone_ratios = [
             zone1 / total_pixels,
             zone2 / total_pixels,
             zone3 / total_pixels
         ]
-        
-        # Оценка баланса (чем ближе к 1, тем равномернее распределение)
         balance_metric = min(zone_ratios) / max(zone_ratios)
-        
-        # 2. Метод оценки контраста (дельта L = Lmax - Lmin)
-        threshold = total_pixels * 0.001  # 0.1% от общего числа пикселей
+
+        threshold = total_pixels * 0.001
         l_min = np.where(hist > threshold)[0][0] if np.any(hist > threshold) else 0
         l_max = np.where(hist > threshold)[0][-1] if np.any(hist > threshold) else 255
         delta_L = l_max - l_min
-        
-        # 3. Дисперсия (мера разброса яркостей)
-        mean_brightness = np.mean(img)
-        variance = np.var(img)  # Собственно дисперсия
-        std_dev = np.sqrt(variance)   # Стандартное отклонение
-        
-        # Дополнительная метрика: асимметрия распределения
-        skewness = np.sum((np.arange(256) - mean_brightness)**3 * hist) / (total_pixels * std_dev**3)
-        
-        metrics = {
+
+        levels = np.arange(256)
+        mean = np.sum(levels * hist) / total_pixels
+        variance = np.sum(((levels - mean) ** 2) * hist) / total_pixels
+        std_dev = np.sqrt(variance)
+        skewness = np.sum(((levels - mean) ** 3) * hist) / (total_pixels * std_dev**3)
+
+        return {
             "zone_ratios": zone_ratios,
             "balance_metric": balance_metric,
             "delta_L": delta_L,
             "variance": variance,
             "skewness": skewness
         }
+
+    def print_metrics(self, metrics, original=None):
+        zone_ratios = metrics["zone_ratios"]
+        print(f"  • Тёмные (0-85): {zone_ratios[0]:.2%}")
+        print(f"  • Средние (85-170): {zone_ratios[1]:.2%}")
+        print(f"  • Светлые (170-255): {zone_ratios[2]:.2%}")
         
-        return metrics
+        def format_diff(label, value, base, better_higher=True):
+            diff = value - base
+            
+            # Особый случай для skewness: сравниваем абсолютные значения
+            if label == "Асимметрия":
+                abs_base = abs(base)
+                abs_value = abs(value)
+                if abs_value < abs_base:
+                    return f"{label}: {value:.2f} — улучшилось на {abs_base - abs_value:.2f}"
+                elif abs_value > abs_base:
+                    return f"{label}: {value:.2f} — ухудшилось на {abs_value - abs_base:.2f}"
+                else:
+                    return f"{label}: {value:.2f} — не изменилось"
+            
+            # Обычная логика для других метрик
+            if abs(diff) < 1e-2:
+                return f"{label}: {value:.2f} — не изменилось"
+            trend = "улучшилось" if (diff > 0) == better_higher else "ухудшилось"
+            return f"{label}: {value:.2f} — {trend} на {abs(diff):.2f}"
+
+        if original:
+            print("  • " + format_diff("Баланс", metrics["balance_metric"], original["balance_metric"], better_higher=True))
+            print("  • " + format_diff("ΔL", metrics["delta_L"], original["delta_L"], better_higher=True) + " (диапазон контраста)")
+            print("  • " + format_diff("Асимметрия", metrics["skewness"], original["skewness"], better_higher=False))
+        else:
+            print(f"  • Баланс: {metrics['balance_metric']:.2f} (1 = идеально)")
+            print(f"  • ΔL: {metrics['delta_L']} (диапазон контраста)")
+            print(f"  • Асимметрия: {metrics['skewness']:.2f}")
 
     def track_metric_changes(self):
-        """Отслеживание изменений метрик после каждой обработки"""
         print(f"\n=== Метрики для изображения: {self.name} ===\n")
-        
-        # Оригинальное изображение
         original_metrics = self.analyze_image(self.gray)
         print(f"Оригинал: {self.name}")
         self.print_metrics(original_metrics)
-        
-        # Обработанные изображения
+
         processed_images = [
             ("Эквализация гистограммы", self.equalized),
             ("Растяжение контраста", self.stretched),
             ("Гамма-коррекция", self.gamma_corrected),
             ("CLAHE", self.clahe_corrected)
         ]
-        
+
         for title, img in processed_images:
             print(f"\n{title}:")
             metrics = self.analyze_image(img)
-            self.print_metrics(metrics)
-
-    def print_metrics(self, metrics):
-        """Вывод метрик в консоль"""
-        zone_ratios = metrics["zone_ratios"]
-        print(f"  • Тёмные (0-85): {zone_ratios[0]:.2%}")
-        print(f"  • Средние (85-170): {zone_ratios[1]:.2%}")
-        print(f"  • Светлые (170-255): {zone_ratios[2]:.2%}")
-        print(f"  • Баланс: {metrics['balance_metric']:.2f} (1 = идеально)")
-        print(f"  • ΔL: {metrics['delta_L']} (диапазон контраста)")
-        print(f"  • Асимметрия: {metrics['skewness']:.2f}")
+            self.print_metrics(metrics, original_metrics)
 
     def plot_results(self):
         self.track_metric_changes()
@@ -187,15 +200,14 @@ class ImageProcessor:
         plt.suptitle(f"Обработка: {self.name}")
         plt.tight_layout()
         plt.show()
-        
-        
+
 
 # === ОБРАБОТКА ВСЕХ ИЗОБРАЖЕНИЙ ===
 image_info = [
     ("OI_LR2/First.jpg", 1.2, 2.0, (8,8)),
-    ("OI_LR2/Second.jpg", 0.8, 2.0, (8,8)),
-    ("OI_LR2/Third.jpg", 1.5, 2.0, (8,8)),
-    ("OI_LR2/Fourth.jpg", 0.9, 2.0, (8,8)),
+    ("OI_LR2/Second.jpg", 1.05, 2.0, (8,8)),
+    ("OI_LR2/Third.jpg", 0.8, 2.0, (8,8)),
+    ("OI_LR2/Fourth.jpg", 0.8, 2.0, (8,8)),
 ]
 
 for img_path, gamma, clip_limit, tile_grid_size in image_info:
